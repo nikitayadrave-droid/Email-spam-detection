@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="mr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Email Spam Detector </title>
+<style>
+  body{font-family: "Segoe UI", Roboto, Arial; background:#f5f7fb; color:#1f2937; display:flex;align-items:flex-start;justify-content:center;padding:40px;}
+  .card{background:white;padding:24px;border-radius:12px;box-shadow:0 6px 18px rgba(20,20,50,0.08);width:820px;max-width:98%;}
+  h1{margin:0 0 8px;font-size:20px}
+  p.lead{margin-top:0;color:#555;font-size:14px}
+  textarea{width:100%;height:160px;padding:12px;font-size:15px;border:1px solid #e6e9ef;border-radius:8px;resize:vertical}
+  .row{display:flex;gap:12px;margin-top:12px;flex-wrap:wrap}
+  button{background:#2563eb;border:none;color:white;padding:10px 14px;border-radius:8px;font-weight:600;cursor:pointer}
+  button.secondary{background:#6b7280}
+  .result{margin-top:16px;padding:12px;border-radius:8px;border:1px dashed #e6e9ef;background:#fbfdff}
+  .badge{display:inline-block;padding:6px 8px;border-radius:6px;font-weight:700}
+  .spam{background:#ffe8e8;color:#991b1b}
+  .ham{background:#e6ffef;color:#065f46}
+  small{color:#666}
+  .training{margin-top:16px;border-top:1px solid #f1f3f7;padding-top:12px}
+  .train-list{max-height:140px;overflow:auto;border:1px solid #f1f3f7;padding:8px;border-radius:8px;background:#fbfbfc}
+  label{display:block;margin-top:8px;font-size:13px;color:#333}
+  input[type="text"]{width:100%;padding:8px;border-radius:6px;border:1px solid #e6e9ef}
+  .probs{display:flex;gap:12px;margin-top:8px;flex-wrap:wrap}
+  .probcard{padding:8px;border-radius:8px;background:#fff;border:1px solid #f1f3f7;min-width:120px;text-align:center}
+  footer{margin-top:16px;color:#777;font-size:13px}
+</style>
+</head>
+<body>
+  <div class="card" role="main">
+    <h1>Email Spam Detector </h1>
+    <p class="lead">This is a completely client-side Naive Bayes model — no server or Python is required. Type the email in the box and press <strong>Check Spam</strong>.</p>
+
+    <label for="emailText">Email Text</label>
+    <textarea id="emailText" placeholder="Fill the email text here — Ex. 'Win money now'"></textarea>
+
+    <div class="row">
+      <button id="btnCheck">Check Spam</button>
+      <button id="btnClear" class="secondary">Clear</button>
+      <button id="btnShowTrain" class="secondary">Show / Edit Training Data</button>
+    </div>
+
+    <div id="out" class="result" aria-live="polite" style="display:none">
+      <div id="labelBadge"></div>
+      <div class="probs" style="margin-top:8px">
+        <div class="probcard">
+          <div style="font-size:13px;color:#666">P(SPAM)</div>
+          <div id="pSpam" style="font-weight:700">—</div>
+        </div>
+        <div class="probcard">
+          <div style="font-size:13px;color:#666">P(NOT SPAM)</div>
+          <div id="pHam" style="font-weight:700">—</div>
+        </div>
+      </div>
+      <div style="margin-top:8px"><small id="explain"></small></div>
+    </div>
+
+    <div class="training" id="trainingSection" style="display:none">
+      <h3>Training Data (sample) — You are posible to Edit</h3>
+      <div class="train-list" id="trainList" aria-live="polite"></div>
+
+      <label>Join the new training example </label>
+      <input type="text" id="newText" placeholder="Email Text (Ex. 'Free gift')">
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button id="addSpam">Add as SPAM</button>
+        <button id="addHam" class="secondary">Add as NOT SPAM</button>
+        <button id="retrain" class="secondary">Retrain Model</button>
+      </div>
+      <div style="margin-top:8px"><small>After retraining the model, the predictions will improve immediately.</small></div>
+    </div>
+
+    <footer>
+      Tip: You can improve the model by increasing the training data. After learning this implementation, using a proper server and a large dataset is suitable for production.
+    </footer>
+  </div>
+
+<script>
+/*
+ Simple Multinomial Naive Bayes implemented in JS
+ - Trains on small sample dataset on load
+ - Laplace smoothing
+ - Tokenization: lowercase, remove non-alphanum, split on spaces
+*/
+
+(function(){
+  // SAMPLE TRAINING DATA (editable)
+  let trainTexts = [
+    "Win money now",
+    "Congratulations you won a lottery",
+    "Buy cheap medicines now",
+    "Earn money from home",
+    "Free coupon claim now",
+    "Exclusive offer just for you",
+    "Limited time offer",
+    "Click here to get loan",
+    "Hello friend how are you",
+    "Let's meet tomorrow",
+    "Important project update",
+    "Your order has been shipped",
+    "Meeting scheduled at 3pm",
+    "Please review the attached file",
+    "Happy birthday wishes"
+  ];
+  // matching labels: 1 = spam, 0 = not spam
+  let trainLabels = [
+    1,1,1,1,1,1,1,1, 0,0,0,0,0,0,0
+  ];
+
+  // Model storage
+  let vocab = new Set();
+  let classWordCounts = {0: {}, 1: {}}; // word -> count
+  let classTotalWords = {0:0, 1:0};
+  let classDocCounts = {0:0, 1:0};
+  let totalDocs = 0;
+  let alpha = 1.0; // Laplace smoothing
+
+  // tokenizer
+  function tokenize(text){
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+
+  function addToCount(cls, word, n=1){
+    if(!classWordCounts[cls][word]) classWordCounts[cls][word] = 0;
+    classWordCounts[cls][word] += n;
+    classTotalWords[cls] += n;
+    vocab.add(word);
+  }
+
+  function trainFromArrays(texts, labels){
+    // reset
+    vocab = new Set();
+    classWordCounts = {0:{},1:{}};
+    classTotalWords = {0:0,1:0};
+    classDocCounts = {0:0,1:0};
+    totalDocs = 0;
+
+    for(let i=0;i<texts.length;i++){
+      let t = texts[i];
+      let lbl = labels[i];
+      classDocCounts[lbl] += 1;
+      totalDocs += 1;
+      let tokens = tokenize(t);
+      for(let w of tokens) addToCount(lbl, w, 1);
+    }
+  }
+
+  function wordProbGivenClass(word, cls){
+    // P(word | class) with Laplace smoothing
+    const V = vocab.size;
+    const count_w_in_class = classWordCounts[cls][word] || 0;
+    return (count_w_in_class + alpha) / (classTotalWords[cls] + alpha * V);
+  }
+
+  function predict(text){
+    const tokens = tokenize(text);
+    if(tokens.length === 0) return {label: "EMPTY", pSpam:0, pHam:0};
+
+    // Compute log-probabilities to avoid underflow
+    const pClass = {
+      1: (classDocCounts[1] + 0.0) / (totalDocs || 1),
+      0: (classDocCounts[0] + 0.0) / (totalDocs || 1)
+    };
+
+    // start with log priors
+    let logSpam = Math.log(Math.max(pClass[1], 1e-12));
+    let logHam  = Math.log(Math.max(pClass[0], 1e-12));
+
+    for(let w of tokens){
+      // if unseen word: smoothing uses zero counts but V includes it only if in vocab.
+      // To gracefully handle new tokens, temporarily include it with zero counts but increase V by 1:
+      if(!vocab.has(w)){
+        // treat as rare: compute using unseen-token smoothing by treating V' = V+1 and count 0
+        const Vprime = vocab.size + 1;
+        // approximate probs:
+        const pWSpam = (0 + alpha) / (classTotalWords[1] + alpha * Vprime);
+        const pWHam  = (0 + alpha) / (classTotalWords[0] + alpha * Vprime);
+        logSpam += Math.log(pWSpam);
+        logHam  += Math.log(pWHam);
+      } else {
+        logSpam += Math.log(wordProbGivenClass(w, 1));
+        logHam  += Math.log(wordProbGivenClass(w, 0));
+      }
+    }
+
+    // convert log probs to normalized probabilities (softmax)
+    const maxLog = Math.max(logSpam, logHam);
+    const expSpam = Math.exp(logSpam - maxLog);
+    const expHam  = Math.exp(logHam - maxLog);
+    const sumExp = expSpam + expHam;
+    const pSpam = expSpam / sumExp;
+    const pHam = expHam / sumExp;
+    const label = pSpam > pHam ? "SPAM" : "NOT SPAM";
+
+    return {label, pSpam, pHam, logSpam, logHam};
+  }
+
+  // UI wiring
+  const txt = document.getElementById('emailText');
+  const btnCheck = document.getElementById('btnCheck');
+  const btnClear = document.getElementById('btnClear');
+  const out = document.getElementById('out');
+  const labelBadge = document.getElementById('labelBadge');
+  const pSpamEl = document.getElementById('pSpam');
+  const pHamEl = document.getElementById('pHam');
+  const explainEl = document.getElementById('explain');
+
+  const btnShowTrain = document.getElementById('btnShowTrain');
+  const trainingSection = document.getElementById('trainingSection');
+  const trainList = document.getElementById('trainList');
+  const newText = document.getElementById('newText');
+  const addSpam = document.getElementById('addSpam');
+  const addHam = document.getElementById('addHam');
+  const retrain = document.getElementById('retrain');
+
+  function refreshTrainList(){
+    trainList.innerHTML = '';
+    for(let i=0;i<trainTexts.length;i++){
+      const div = document.createElement('div');
+      div.style.padding = "6px 4px";
+      div.style.borderBottom = "1px dashed #f1f3f7";
+      div.style.fontSize = "14px";
+      const lab = trainLabels[i] === 1 ? '<span class="badge spam" style="margin-right:8px">SPAM</span>' : '<span class="badge ham" style="margin-right:8px">NOT SPAM</span>';
+      div.innerHTML = lab + escapeHtml(trainTexts[i]);
+      // delete button
+      const del = document.createElement('button');
+      del.textContent = "Delete";
+      del.style.float = "right";
+      del.style.background = "#ef4444";
+      del.style.color = "white";
+      del.style.border = "none";
+      del.style.borderRadius = "6px";
+      del.style.padding = "4px 8px";
+      del.style.cursor = "pointer";
+      del.onclick = (e)=>{ trainTexts.splice(i,1); trainLabels.splice(i,1); refreshTrainList(); trainFromArrays(trainTexts, trainLabels); };
+      div.appendChild(del);
+      trainList.appendChild(div);
+    }
+  }
+
+  function escapeHtml(str){ return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  btnCheck.addEventListener('click', ()=>{
+    const text = txt.value.trim();
+    if(!text){
+      alert("कृपया ईमेल टेक्स्ट टाका.");
+      return;
+    }
+    const res = predict(text);
+    out.style.display = "block";
+    if(res.label === "SPAM"){
+      labelBadge.innerHTML = '<span class="badge spam">SPAM</span>';
+    } else {
+      labelBadge.innerHTML = '<span class="badge ham">NOT SPAM</span>';
+    }
+    pSpamEl.textContent = (res.pSpam*100).toFixed(2) + " %";
+    pHamEl.textContent = (res.pHam*100).toFixed(2) + " %";
+
+    explainEl.textContent = `Model priors — P(spam)=${(classDocCounts[1]/(totalDocs||1)).toFixed(2)}, P(not spam)=${(classDocCounts[0]/(totalDocs||1)).toFixed(2)}. Tokens: ${tokenize(text).join(', ')}`;
+  });
+
+  btnClear.addEventListener('click', ()=>{ txt.value=''; out.style.display='none'; });
+
+  btnShowTrain.addEventListener('click', ()=>{
+    trainingSection.style.display = trainingSection.style.display === 'none' ? 'block' : 'none';
+    refreshTrainList();
+  });
+
+  addSpam.addEventListener('click', ()=>{
+    const t = newText.value.trim();
+    if(!t){ alert("Enter text to add."); return; }
+    trainTexts.push(t); trainLabels.push(1);
+    newText.value='';
+    refreshTrainList();
+    trainFromArrays(trainTexts, trainLabels);
+    alert("Added as SPAM and retrained.");
+  });
+  addHam.addEventListener('click', ()=>{
+    const t = newText.value.trim();
+    if(!t){ alert("Enter text to add."); return; }
+    trainTexts.push(t); trainLabels.push(0);
+    newText.value='';
+    refreshTrainList();
+    trainFromArrays(trainTexts, trainLabels);
+    alert("Added as NOT SPAM and retrained.");
+  });
+  retrain.addEventListener('click', ()=>{
+    trainFromArrays(trainTexts, trainLabels);
+    alert("Model retrained on current training data.");
+  });
+
+  // initial training and UI populate
+  trainFromArrays(trainTexts, trainLabels);
+  refreshTrainList();
+
+  // expose tokenize for explain text
+  window.tokenize = tokenize;
+
+})();
+</script>
+</body>
+</html>
